@@ -75,6 +75,12 @@ def serve(address: str, port: int, set_list: List[Tuple[str, str]],) -> None:
               help="Path to the FOLDER where the 'zotero.sqlite' file resides",
               default=None,
               type=click.Path(exists=True))
+@click.option("-a",
+              "--attachments-folder",
+              "attachments_folder",
+              help="Path to the FOLDER where the 'attachments' file resides",
+              default=None,
+              type=click.Path(exists=True))
 @click.option("-o",
               "--outfolder",
               help="Folder to save the imported library",
@@ -85,7 +91,7 @@ def serve(address: str, port: int, set_list: List[Tuple[str, str]],) -> None:
               is_flag=True,
               default=False)
 def do_importer(from_bibtex: Optional[str], from_sql: Optional[str],
-                outfolder: Optional[str], link: bool) -> None:
+                attachments_folder: Optional[str], outfolder: Optional[str], link: bool) -> None:
     """Import zotero libraries into papis libraries."""
     if outfolder is None:
         from papis.config import get_lib_dirs
@@ -100,7 +106,7 @@ def do_importer(from_bibtex: Optional[str], from_sql: Optional[str],
     elif from_sql is not None:
         from papis_zotero.sql import add_from_sql
         try:
-            add_from_sql(from_sql, outfolder, link)
+            add_from_sql(from_sql, outfolder, attachments_folder, link)
         except Exception as exc:
             logger.error("Failed to import from file: %s",
                          from_sql,

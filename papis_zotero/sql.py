@@ -17,7 +17,7 @@ from papis_zotero.utils import (
 logger = papis.logging.get_logger(__name__)
 
 # fuzzy date matching
-ISO_DATE_RE = re.compile(r"(?P<year>\d{4})-?(?P<month>\d{2})?-?(?P<day>\d{2})?")
+ISO_DATE_RE = re.compile(r"(?P<year>\d{4})-?(?P<month>\d{1,2})?-?(?P<day>\d{1,2})?")
 
 
 ZOTERO_QUERY_ITEM_FIELD = """
@@ -126,8 +126,7 @@ WHERE
 """.format(",".join(["?"] * len(ZOTERO_SUPPORTED_MIMETYPES_TO_EXTENSION)))
 
 
-def get_files(connection: sqlite3.Connection, item_id: str, item_key: str,
-              input_path: str, out_folder: str) -> List[str]:
+def get_files(connection: sqlite3.Connection, item_id: str, input_path: str, attachments_folder: str) -> List[str]:
     cursor = connection.cursor()
     cursor.execute(
         ZOTERO_QUERY_ITEM_ATTACHMENTS,
@@ -140,9 +139,22 @@ def get_files(connection: sqlite3.Connection, item_id: str, item_key: str,
                            key, mime_type)
             continue
 
+        logger.debug("Processing attachment %s (with type %s) from '%s'.",
+                     key, mime_type, path)
         if match := re.match(r"storage:(.*)", path):
             file_name = match.group(1)
-            files.append(os.path.join(input_path, "storage", key, file_name))
+            file_path = os.path.join(input_path, "storage", key, file_name)
+            if os.path.exists(file_path):
+                files.append(file_path)
+            else:
+                logger.warning("Storage file not found: %s", file_path)
+        elif match := re.match(r"attachments:(.*)", path):
+            file_name = match.group(1)
+            file_path = os.path.join(attachments_folder, file_name)
+            if os.path.exists(file_path):
+                files.append(file_path)
+            else:
+                logger.warning("Attachment file not found: %s", file_path)
         elif os.path.exists(path):
             # NOTE: this is likely a symlink to some other on-disk location
             files.append(path)
@@ -174,14 +186,42 @@ def get_tags(connection: sqlite3.Connection, item_id: str) -> Dict[str, List[str
 
 
 ZOTERO_QUERY_ITEM_COLLECTIONS = """
-SELECT
-    collections.collectionName
-FROM
-    collections,
-    collectionItems
-WHERE
-    collectionItems.itemID = ? AND
-    collections.collectionID = collectionItems.collectionID
+WITH RECURSIVE collection_hierarchy (id, name, parent, depth) AS (
+    -- 初始: 使用子查询取 item's 第一个直接集合（按 collectionID 升序）
+    SELECT id, name, parent, depth
+    FROM (
+        SELECT
+            c.collectionID AS id,
+            c.collectionName AS name,
+            c.parentCollectionID AS parent,
+            0 AS depth
+        FROM
+            collections c
+        JOIN
+            collectionItems ci ON c.collectionID = ci.collectionID
+        WHERE
+            ci.itemID = ?
+        ORDER BY c.collectionID
+        LIMIT 1
+    )
+
+    UNION ALL
+
+    -- 递归: 向上找父级，depth 加 1
+    SELECT
+        c.collectionID AS id,
+        c.collectionName AS name,
+        c.parentCollectionID AS parent,
+        h.depth + 1 AS depth
+    FROM
+        collections c
+    JOIN
+        collection_hierarchy h ON c.collectionID = h.parent
+)
+-- 返回名称，按 depth 降序（根先），去重（虽 unlikely）
+SELECT DISTINCT name
+FROM collection_hierarchy
+ORDER BY depth DESC;
 """
 
 
@@ -195,37 +235,38 @@ def get_collections(connection: sqlite3.Connection,
 
 
 ZOTERO_QUERY_ITEM_COUNT = """
-    SELECT
+SELECT
     COUNT(item.itemID)
-    FROM
+FROM
     items item,
     itemTypes itemType
-    WHERE
+WHERE
     itemType.itemTypeID = item.itemTypeID AND
     itemType.typeName NOT IN ({})
-    ORDER BY
+ORDER BY
     item.itemID
 """.format(",".join(["?"] * len(ZOTERO_EXCLUDED_ITEM_TYPES)))
 
 ZOTERO_QUERY_ITEMS = """
-    SELECT
+SELECT
     item.itemID,
     itemType.typeName,
     key,
     dateAdded
-    FROM
+FROM
     items item,
     itemTypes itemType
-    WHERE
+WHERE
     itemType.itemTypeID = item.itemTypeID AND
     itemType.typeName NOT IN ({})
-    ORDER BY
+ORDER BY
     item.itemID
 """.format(",".join(["?"] * len(ZOTERO_EXCLUDED_ITEM_TYPES)))
 
 
 def add_from_sql(input_path: str,
                  out_folder: Optional[str] = None,
+                 attachments_folder: Optional[str] = None,
                  link: bool = False) -> None:
     """
     :param inpath: path to zotero SQLite database "zoter.sqlite" and
@@ -265,6 +306,10 @@ def add_from_sql(input_path: str,
     from papis.strings import time_format
 
     folder_name = getstring("add-folder-name")
+
+    # Determine attachments folder once, outside the loop
+    default_attachments_folder = attachments_folder or input_path
+
     for i, (item_id, zitem_type, item_key, zdate_added) in enumerate(cursor, start=1):
         # convert fields
         date_added = (
@@ -274,11 +319,11 @@ def add_from_sql(input_path: str,
 
         # get Zotero metadata
         fields = get_fields(connection, item_id)
+
         files = get_files(connection,
                           item_id,
-                          item_key,
                           input_path=input_path,
-                          out_folder=out_folder)
+                          attachments_folder=default_attachments_folder)
 
         item = {"type": item_type, "time-added": date_added, "files": files}
         item.update(fields)
@@ -289,8 +334,12 @@ def add_from_sql(input_path: str,
         logger.info("[%4d/%-4d] Exporting item '%s' to library '%s'.",
                     i, items_count, item_key, out_folder)
 
+        subfolder = "Misc"
+        collections = item.get("collections")
+        if collections and len(collections):
+            subfolder = os.path.join(*collections)
         from papis.commands.add import run as add
-        add(paths=files, data=item, link=link, folder_name=folder_name)
+        add(paths=files, data=item, link=link, folder_name=folder_name, subfolder=subfolder)
 
     logger.info("Finished exporting from '%s'.", input_path)
     logger.info("Exported files can be found at '%s'.", out_folder)
