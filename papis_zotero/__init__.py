@@ -75,6 +75,12 @@ def serve(address: str, port: int, set_list: List[Tuple[str, str]],) -> None:
               help="Path to the FOLDER where the 'zotero.sqlite' file resides",
               default=None,
               type=click.Path(exists=True))
+@click.option("-u",
+              "--from-url",
+              "from_url",
+              help="URL address",
+              default=None,
+              type=str)
 @click.option("-a",
               "--attachments-folder",
               "attachments_folder",
@@ -90,7 +96,7 @@ def serve(address: str, port: int, set_list: List[Tuple[str, str]],) -> None:
               help="Whether to link the pdf files or copy them",
               is_flag=True,
               default=False)
-def do_importer(from_bibtex: Optional[str], from_sql: Optional[str],
+def do_importer(from_bibtex: Optional[str], from_sql: Optional[str], from_url: Optional[str],
                 attachments_folder: Optional[str], outfolder: Optional[str], link: bool) -> None:
     """Import zotero libraries into papis libraries."""
     if outfolder is None:
@@ -111,6 +117,13 @@ def do_importer(from_bibtex: Optional[str], from_sql: Optional[str],
             logger.error("Failed to import from file: %s",
                          from_sql,
                          exc_info=exc)
+    elif from_url is not None:
+        from papis_zotero.url import add_from_url
+        try:
+            add_from_url(from_url, outfolder, link)
+        except Exception as exc:
+            logger.error("Failed to import from url: %s", from_url, exc_info=exc)
+
     else:
-        logger.error("Either '--from-bibtex' or '--from-sql-folder' should be "
+        logger.error("Either '--from-bibtex' or '--from-sql-folder' or '--from-url' should be "
                      "passed to import from Zotero.")

@@ -37,7 +37,7 @@ classifiers = [
 dependencies = ["papis>=0.14,<0.15"]
 
 [project.optional-dependencies]
-develop = ["mypy>=0.7", "pytest", "pytest-cov", "ruff", "types-pyyaml"]
+develop = ["mypy>=0.7", "pytest", "pytest-cov", "ruff", "types-pyyaml", "weasyprint"]
 
 [project.urls]
 Repository = "https://github.com/papis/papis-zotero"
