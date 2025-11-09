@@ -38,6 +38,13 @@ except ImportError:
 
 logger = papis.logging.get_logger(__name__)
 
+# Constants
+REQUEST_TIMEOUT = 10
+MAX_LINE_WIDTH = 75
+DEFAULT_EDITOR = "vim"
+FROM_WEB_TAG = "from-web"
+AUTO_IMPORTED_TAG = "auto-imported"
+
 # --- Auto-detect optional dependencies ---
 
 try:
@@ -175,7 +182,7 @@ def _fetch_raw_html(url: str, file_path: str) -> str:
     headers = {
         "User-Agent": USER_AGENT,
     }
-    response = requests.get(url, headers=headers, timeout=10)
+    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     raw_html_content = response.text
 
@@ -270,7 +277,7 @@ def _parse_content(url: str, html_content: str) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Parsed data.
     """
-    print("2/5: Parsing metadata and content...")
+    logger.info("2/5: Parsing metadata and content...")
     if MERCURY_AVAILABLE:
         logger.info("...using 'mercury-parser' (recommended).")
         return _parse_with_mercury(url)
@@ -294,7 +301,7 @@ def _generate_simplified_html(mercury_data: Dict[str, Any], url: str, file_path:
     Returns:
         str: The generated HTML content.
     """
-    print("3/5: Generating simplified HTML...")
+    logger.info("3/5: Generating simplified HTML...")
     title = mercury_data.get("title", "No title")
     content_html = mercury_data.get("content", "<p>Unable to extract content.</p>")
     url_decoded = urllib.parse.unquote(url)
@@ -342,7 +349,7 @@ def _edit_metadata_with_editor(metadata: Dict[str, Any]) -> Optional[Dict[str, A
         logger.error("Error: Editing requires 'PyYAML' library. Run: pip install PyYAML")
         return None
 
-    editor = os.environ.get("EDITOR", "vim")
+    editor = os.environ.get("EDITOR", DEFAULT_EDITOR)
     temp_path = ""
     result: Optional[Dict[str, Any]] = None
 
@@ -433,7 +440,7 @@ def _print_metadata_and_ask(metadata: Dict[str, Any]) -> Dict[str, Any]:
         if choice == "y":
             return metadata
         elif choice == "n":
-            print("Aborting.")
+            logger.info("Aborting.")
             sys.exit(0)
         elif choice == "e" and YAML_AVAILABLE:
             new_metadata = _edit_metadata_with_editor(metadata)
@@ -441,11 +448,11 @@ def _print_metadata_and_ask(metadata: Dict[str, Any]) -> Dict[str, Any]:
                 metadata = new_metadata
             continue
         else:
-            print("Invalid choice. Enter 'y', 'n', or 'e'.")
+            logger.warning("Invalid choice. Enter 'y', 'n', or 'e'.")
 
 
 def _create_papis_document(url: str, mercury_data: Dict[str, Any], files_to_add: list, link: bool,
-                           doc_id: str) -> tuple:
+                           doc_id: str) -> tuple[str, Optional[papis.document.Document]]:
     """
     Create a Papis document entry.
 
@@ -463,21 +470,21 @@ def _create_papis_document(url: str, mercury_data: Dict[str, Any], files_to_add:
     Returns:
         tuple: Document ID and document object.
     """
-    print("4/5: Creating Papis entry...")
+    logger.info("4/5: Creating Papis entry...")
     metadata = {
         "url": url,
         "title": mercury_data.get("title", "No title"),
         "author": mercury_data.get("author", "N.A."),
         "date": mercury_data.get("date_published", ""),
         "abstract": mercury_data.get("excerpt", ""),
-        "tags": ["from-web", "auto-imported"],
+        "tags": [FROM_WEB_TAG, AUTO_IMPORTED_TAG],
         "add-date": datetime.now().strftime("%Y-%m-%d")
     }
     key_name = papis.id.key_name()
     metadata[key_name] = doc_id
 
     metadata = _print_metadata_and_ask(metadata)
-    # 确保 ID 在编辑后仍然存在
+    # Ensure ID persists after editing
     metadata[key_name] = doc_id
 
     doc_add(files_to_add, metadata, link=link)
@@ -503,14 +510,14 @@ def _generate_pdf(doc: papis.document.Document, html_content: str, pdf_path: str
         base_url (str): Base URL for relative links.
     """
     if not WEASYPRINT_AVAILABLE:
-        print("5/6: Skipping PDF generation (missing 'weasyprint').")
+        logger.info("5/6: Skipping PDF generation (missing 'weasyprint').")
         return
 
-    print("5/6: Converting to PDF...")
+    logger.info("5/6: Converting to PDF...")
     try:
         HTML(string=html_content, base_url=base_url).write_pdf(pdf_path)
         addto(doc, [pdf_path])
-        print("  ...PDF added successfully.")
+        logger.info("  ...PDF added successfully.")
     except Exception as e:
         logger.warning("PDF generation failed: %s. Skipping PDF.", e)
 
@@ -527,7 +534,7 @@ def _generate_markdown(doc: papis.document.Document, html_content: str, md_path:
         html_content (str): The HTML content.
         md_path (str): Path to save the Markdown.
     """
-    print("6/6: Converting to Markdown...")
+    logger.info("6/6: Converting to Markdown...")
 
     html_to_convert = html_content
 
@@ -554,7 +561,7 @@ def _generate_markdown(doc: papis.document.Document, html_content: str, md_path:
 
         # Add to Papis
         addto(doc, [md_path])
-        print("  ...Markdown added successfully.")
+        logger.info("  ...Markdown added successfully.")
     except Exception as e:
         logger.warning("Markdown generation failed: %s. Skipping Markdown.", e)
 
@@ -573,7 +580,7 @@ def process_url_main(url: str, link: bool, precomputed_id: str) -> None:
         precomputed_id (str): The pre-computed ID to assign to the document.
     """
     temp_dir = tempfile.mkdtemp(prefix="papis_importer_")
-    print(f"Temporary Workspace: {temp_dir}")
+    logger.info("Temporary Workspace: %s", temp_dir)
 
     # Define all temporary file paths
     file_raw_html = os.path.join(temp_dir, "raw.html")
@@ -642,26 +649,26 @@ def add_from_url(url: str, out_folder: Optional[str] = None, link: Optional[bool
     if out_folder is not None:
         papis.config.set_lib_from_name(out_folder)
 
-    # 1. 加载数据库
+    # 1. Load database
     db = papis.database.get()
 
-    # 2. 从 URL 生成可预测的 ID
+    # 2. Generate predictable ID from URL
     precomputed_id = _generate_id_from_url(url)
     logger.info("Generated potential ID: %s", precomputed_id)
 
-    # 3. 检查文档是否已存在
+    # 3. Check if document already exists
     existing_doc = db.find_by_id(precomputed_id)
 
     if existing_doc:
-        logger.info("\nWarning: Entry %s already exists.", precomputed_id)
+        logger.warning("Entry %s already exists.", precomputed_id)
         choice = input("Do you want to force update (this will delete the old entry)? (y/n): ").strip().lower()
 
         if choice == "y":
             logger.info("Deleting old entry: %s...", precomputed_id)
             doc_remove(existing_doc)
-            print("Old entry deleted.")
+            logger.info("Old entry deleted.")
         else:
-            print("Aborting.")
+            logger.info("Aborting.")
             sys.exit(0)
 
     process_url_main(url, link, precomputed_id)
@@ -670,7 +677,7 @@ def add_from_url(url: str, out_folder: Optional[str] = None, link: Optional[bool
 # --- Main executor (if script is run directly) ---
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(f"Usage: python {sys.argv[0]} <URL> [library_name]")
+        logger.error("Usage: python %s <URL> [library_name]", sys.argv[0])
         sys.exit(1)
 
     url_to_add = sys.argv[1]
